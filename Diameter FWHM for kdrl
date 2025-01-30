@@ -1,0 +1,89 @@
+%% Import your file and stack up lines into a frame
+clear all;
+clc;
+disp('import raw data');
+[fname,pathname]=uigetfile('*.tif','pick a linescan file');
+if fname == 0; beep; disp('Cancelled');  end
+imageLines2 = imimportTif([pathname fname])';
+image = flip(imageLines2,1);
+figure(1)
+imagesc(image(1:size(image,2),:))
+colormap('gray')
+
+%% This is where you selectthe parts of the image you wanna analyse. Helpful when you have multiple vessel sections in one image
+title('Select the boundaries of the region of interest 1/2');
+[X1,Y1] = ginput(1);
+line([X1 X1],[1 size(image,2)]);
+
+title('Select the boundaries of the region of interest 2/2');
+[X2,Y2] = ginput(1);
+line([X2 X2],[1 size(image,2)]);
+refresh
+pause(.01);
+
+startColumn   = round(min(X1, X2));      
+endColumn     = round(max(X1, X2));
+
+SegmentedImage = image(:, startColumn:endColumn);
+
+%% Thresholding and figuring out the diameter, cleaner the image, better the detection
+
+imageSmooth = smoothdata(SegmentedImage,2);
+x = 1:1:size(SegmentedImage,2);
+
+for i = 1:size(SegmentedImage,1)
+ try
+  [pks,locs] = findpeaks(imageSmooth(i,:),x,"NPeaks",2,"MinPeakDistance",160);
+  %if (size(pks)==2)
+  SlopeStart = find(imageSmooth(i,:)<(pks(1)/2));
+  Start = SlopeStart(find(SlopeStart<locs(1),1,'last'));
+  SlopeEnd = find(imageSmooth(i,:)<(pks(2)/2));
+  End = SlopeEnd(find(SlopeEnd>locs(2),1,'first'));
+   %End = SlopeStart(find(SlopeStart>locs(1),1,'first'));
+  Diameter(i) = End-Start;
+  %end
+ catch
+  fprintf('skippy %s \n',i)
+ end
+
+end 
+%%
+ plot(Diameter)
+
+ RD = Diameter * (0.0255/512) * (10^3); % enter the x-resolution
+ RD(RD==0) = NaN;
+ plot(RD)
+
+%% Importing the tif file for analysis-readable format
+
+% modified from LSPIV
+
+function imageLines = imimportTif(file_name)
+
+imageFrames = [];
+for index = 1:10000
+    try
+        imageFrames(:,:,index) = imread(file_name,index);
+    catch
+        break
+    end
+    
+    if index == 10000 % change according to file size- no of frames
+        disp('Increase lines if needed')
+    end
+end
+fprintf('\n');
+
+% reformat into a single frame reminiscent of a kymograph
+
+imageFramesSize = size(imageFrames);
+
+imageLines = zeros(imageFramesSize(2), imageFramesSize(1)*imageFramesSize(3));
+for index = 1:imageFramesSize(3)
+    imageLines(:,1+(index-1)*imageFramesSize(1):(index)*imageFramesSize(1)) = imageFrames(:,:,index)';
+end
+
+disp('Import complete, analysis time!');
+end
+
+
