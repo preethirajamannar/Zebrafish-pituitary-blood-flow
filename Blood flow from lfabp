@@ -1,0 +1,168 @@
+%% Code to analyse blood flow velocities from line scans and compute RBC velocity pulse frequencies, if any.
+% Preethi Rajamannar, Gil Levkowitz
+% Continues to be edited and modified according to input images
+% One day I shall finally be satisfied with said code. 
+% Please note that it works perfectly for MY data and will need to be modified for others.
+% Oops.
+% Run section by section to ensure error free running for images and better
+% control over errors.
+
+%%
+close all;
+clear all;
+clc;
+
+% Selecting file name
+disp('import raw data');
+[file_name,pathname]=uigetfile('*.tif','pick a linescan file');%loads file
+if file_name == 0; beep; disp('Cancelled');  end
+imageLines = imimportTif([pathname file_name])';
+imageLines = transpose(imageLines);
+
+% Find peaks and analyse lags
+
+delay = [];
+mean1 = mean(imageLines(200:202,:)); %obtain signal and normalize(av1)
+mean2 = mean(imageLines(400:402,:));
+av1 = mean1-(mean(mean1));
+av2 = mean2-(mean(mean2));
+
+s1 = sgolayfilt(av1, 3, 21); %3rd degree, 4th brings in artifacts 
+s2 = sgolayfilt(av2, 3, 21);
+
+diff1 = normalize(smooth(sgolayfilt((-diff(s1)),2,21)),'range'); %negative differential, of the time-series signal
+diff2 = normalize(smooth(sgolayfilt((-diff(s2)),2,21)),'range');
+
+
+PeakHeight1 = mean(diff1) - (0.2*std(diff1));
+PeakHeight2 = mean(diff2) - (0.2*std(diff2));
+
+%For Better Visualization of Peaks to compare
+PeakDiff = PeakHeight1-PeakHeight2;
+diff1 = diff1 - PeakDiff;
+PeakHeight1 = PeakHeight1 - PeakDiff;
+
+disp('Open signal analyser to manually set thresholds for the next step pr just directly run the next section')
+
+% Identify peaks
+
+x = 1:1:length(diff1);
+[pks1, locs1] = findpeaks(diff1,x, 'MinPeakDistance', 10, 'MinPeakHeight', PeakHeight1);
+[pks2, locs2] = findpeaks(diff2,x, 'MinPeakDistance', 10, 'MinPeakHeight', PeakHeight2) ;
+
+figure(1) %detected peaks to manually check
+ hold on
+ plot(diff1)
+ plot(diff2)
+ plot(locs1,pks1,'rx')
+ plot(locs2,pks2,'go');
+ linkdata on;
+ hold off
+ 
+ disp('Select brush to delete unmatched points manually');
+
+%% Skip this section
+for i = 1:(length(locs1)) 
+    if (locs2(1,i) < locs1(1,i)) %need to add more conditions for locs2 so I don't have to manually eliminate points
+        locs1(i) = [];
+        pks1(i) = [];    
+    end
+end
+
+%%
+
+if length(locs1) == length(locs2) %If the peaks are right, the two vectors should be equal lengths
+    locsdif = locs2-locs1; %delay for individual RBCs
+   
+    figure(2)
+     histogram(locsdif, 'BinWidth', 1); %make sure that there are no negatives
+    
+    figure(3) %discrete delay-position plot
+     plot(diff1);
+     hold on
+     stem(locs1,locsdif);
+     hold off
+end
+
+%% Interpolate the discrete signal to obtain a continuous signal of peak differences
+
+SamPts = locs1;
+SamVals = locsdif;
+QueryPts = 1:1:5000;
+QueryVals = interp1(SamPts, SamVals, QueryPts, 'spline') ; %pchip seems to work well too. Best being cubic. 
+figure(4)
+ hold on
+ plot(QueryVals);
+ y = smoothdata(QueryVals','movmedian',50);
+ plot(y');
+ hold off
+ 
+%% Delay and mean velocity using cross-correlations within the same image (not really auto)
+
+for i = 1:(length(s1)-200)
+    delay(i,:) = finddelay(s1(1,i:i+200),s2(1,i:i+200)); %cross-correlation using a 1sec moving window
+end
+xpixel = 0.03;
+xgap = 200;
+tpixel = 7.56;
+
+RealVelocity = (xgap*xpixel)/(tpixel*mean(QueryVals));
+VelocityVariability = (xgap*xpixel)/(tpixel*std(QueryVals));
+RBCFlux = (length(locs1)*1000)/(tpixel*length(QueryVals));
+
+fprintf('Mean velocity is: %d, velocity variability is: %d, and no. of RBCs per sec is: %d \n',RealVelocity,VelocityVariability,RBCFlux);
+
+% Identify the dominant frequencies
+
+SamFreq = 133;                          % Sampling frequency, change according to time in file                     
+SamPeriod = 1/SamFreq;                          % Sampling period       
+FrameNum = length(QueryVals);             % Length of signal, in frames, usually no of lines
+TimeVec = (0:FrameNum-1)*SamPeriod;                     % Time vector
+
+FourierT = fft(QueryVals); % fft(QueryVals - mean(QueryVals));
+P2 = abs(FourierT/FrameNum);
+P1 = P2(1:FrameNum/2+1);
+P1(2:end-1) = 2*P1(2:end-1);  % amp = sqrt(P1(2:end-1));
+Freq = SamFreq*(0:(FrameNum/2))/FrameNum;
+
+% Thresholding
+
+figure(5) 
+plot(Freq,smooth(P1)) % plot(Freq, smooth(amp))
+title('Single-Sided Amplitude Spectrum')
+xlabel('f (Hz)')
+ylabel('|P1(f)|') % ylabel('amplitude')
+xlim([0,10])
+ylim([0,5])
+
+%% Importing the tif file for analysis-readable format
+
+% modified from LSPIV
+
+function imageLines = imimportTif(file_name)
+
+imageFrames = [];
+for index = 1:15000
+    try
+        imageFrames(:,:,index) = imread(file_name,index);
+    catch
+        break
+    end
+    
+    if index == 20000
+        disp('Increase lines if needed')
+    end
+end
+fprintf('\n');
+
+% reformat into a single frame reminiscent of a kymograph
+
+imageFramesSize = size(imageFrames);
+
+imageLines = zeros(imageFramesSize(2), imageFramesSize(1)*imageFramesSize(3));
+for index = 1:imageFramesSize(3)
+    imageLines(:,1+(index-1)*imageFramesSize(1):(index)*imageFramesSize(1)) = imageFrames(:,:,index)';
+end
+
+disp('Import complete, analysis time!');
+end
